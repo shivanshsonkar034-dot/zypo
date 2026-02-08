@@ -5,10 +5,8 @@ import { collection, onSnapshot, query, where, orderBy, addDoc, doc, serverTimes
 let currentUser = null;
 let cart = [];
 let allProducts = [];
-let allVillages = [];
 let currentCategory = 'all';
-let baseDeliveryCharge = 0;
-let selectedVillageCharge = 0;
+let deliveryCharge = 0;
 let searchTerm = '';
 
 // Authentication Listener
@@ -48,7 +46,7 @@ function initGlobalListeners() {
     onSnapshot(doc(db, "shopControl", "status"), (docSnap) => {
         if (docSnap.exists()) {
             const data = docSnap.data();
-            baseDeliveryCharge = data.deliveryCharge || 0;
+            deliveryCharge = data.deliveryCharge || 0;
             if(data.supportNumber) {
                 document.getElementById('support-link').href = `tel:${data.supportNumber}`;
             }
@@ -59,27 +57,8 @@ function initGlobalListeners() {
             } else {
                 overlay.style.display = 'none';
             }
-            updateCartUI(); // Refresh total if base charge changes
         }
     });
-
-    // Villages Listener
-    onSnapshot(collection(db, "villages"), (snap) => {
-        allVillages = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-        const vSelect = document.getElementById('cust-village');
-        vSelect.innerHTML = '<option value="">Select Village / Area</option>';
-        allVillages.forEach(v => {
-            vSelect.innerHTML += `<option value="${v.id}">${v.name} (₹${v.deliveryCharge})</option>`;
-        });
-    });
-
-    // Listen for village selection change
-    document.getElementById('cust-village').onchange = (e) => {
-        const villageId = e.target.value;
-        const village = allVillages.find(v => v.id === villageId);
-        selectedVillageCharge = village ? village.deliveryCharge : 0;
-        updateCartUI();
-    };
 }
 
 function loadData() {
@@ -157,12 +136,8 @@ function updateCartUI() {
                 </div>
             </div>`;
     }).join('');
-    
-    // Use village charge if selected, otherwise fallback to base charge
-    const finalCharge = (cart.length > 0) ? (selectedVillageCharge || baseDeliveryCharge) : 0;
-    
     document.getElementById('cart-count').innerText = cart.reduce((a, b) => a + b.qty, 0);
-    document.getElementById('cart-total').innerText = `₹${totalVal + finalCharge}`;
+    document.getElementById('cart-total').innerText = `₹${totalVal + (cart.length > 0 ? deliveryCharge : 0)}`;
 }
 
 // Order Management (User)
@@ -208,27 +183,17 @@ function loadUserOrders() {
 // Checkout Flow
 document.getElementById('checkout-btn').onclick = async () => {
     if (!currentUser) return alert("Please login to place an order");
-    
     const name = document.getElementById('cust-name').value;
     const phone = document.getElementById('cust-phone').value;
     const address = document.getElementById('cust-address').value;
-    const villageId = document.getElementById('cust-village').value;
-    const villageObj = allVillages.find(v => v.id === villageId);
-
-    if (!name || !phone || !address || !villageId || cart.length === 0) {
-        return alert("Please fill all delivery details and select a village");
-    }
+    if (!name || !phone || !address || cart.length === 0) return alert("Please fill all delivery details");
     
-    const finalCharge = selectedVillageCharge || baseDeliveryCharge;
-
     try {
         await addDoc(collection(db, "orders"), {
             userId: currentUser.uid,
             customerName: name,
             customerPhone: phone,
             customerAddress: address,
-            villageName: villageObj ? villageObj.name : "N/A",
-            deliveryChargeApplied: finalCharge,
             items: cart,
             total: parseInt(document.getElementById('cart-total').innerText.replace('₹','')),
             status: 'pending',
@@ -236,9 +201,6 @@ document.getElementById('checkout-btn').onclick = async () => {
         });
         alert("Order Placed Successfully!");
         cart = [];
-        // Reset Village Selection
-        document.getElementById('cust-village').value = "";
-        selectedVillageCharge = 0;
         updateCartUI();
         document.getElementById('sidebar-overlay').classList.remove('active');
     } catch (e) { alert("Error: " + e.message); }
