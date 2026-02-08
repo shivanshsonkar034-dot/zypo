@@ -1,258 +1,214 @@
-/* ======================================
-   ZYPSO MART – FIXED admin.js
-   ====================================== */
-
 import { db } from './firebase.js';
+import { collection, onSnapshot, addDoc, updateDoc, deleteDoc, doc, query, orderBy, serverTimestamp, setDoc } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-firestore.js";
 
-import {
-  collection,
-  onSnapshot,
-  addDoc,
-  updateDoc,
-  deleteDoc,
-  doc,
-  query,
-  orderBy,
-  serverTimestamp,
-  getDoc,
-  setDoc
-} from "https://www.gstatic.com/firebasejs/9.22.0/firebase-firestore.js";
-
-/* ======================================
-   GLOBAL STATE
-   ====================================== */
-let allProducts = [];
 let allOrders = [];
+let allProducts = [];
 
-let productsUnsub = null;
-let ordersUnsub = null;
-
-/* ======================================
-   INIT
-   ====================================== */
-window.initAdmin = async () => {
-  await initShopSettings();
-  initProducts();
-  initOrders();
-};
-
-/* ======================================
-   SHOP SETTINGS (SAFE DEFAULT)
-   ====================================== */
-async function initShopSettings() {
-  const ref = doc(db, 'shopControl', 'status');
-  const snap = await getDoc(ref);
-
-  if (!snap.exists()) {
-    await setDoc(ref, {
-      isClosed: false,
-      baseCharge: 20,
-      chargePerKm: 10,
-      freeDeliveryAbove: 500,
-      minOrderAmount: 0,
-      supportNumber: "8090315246",
-      shopLocation: { lat: 0, lng: 0 }
+window.initAdmin = () => {
+    // 1. Shop Settings Listener
+    onSnapshot(doc(db, "shopControl", "status"), (docSnap) => {
+        if(docSnap.exists()) {
+            const d = docSnap.data();
+            document.getElementById('shop-toggle').checked = d.isClosed;
+            document.getElementById('status-label').innerText = d.isClosed ? "CLOSED" : "OPEN";
+            document.getElementById('delivery-charge-input').value = d.deliveryCharge || 0;
+            document.getElementById('support-number-input').value = d.supportNumber || "8090315246";
+        }
     });
-  }
-}
 
-/* ======================================
-   PRODUCTS – REALTIME SAFE
-   ====================================== */
-function initProducts() {
-  if (productsUnsub) {
-    productsUnsub();
-    productsUnsub = null;
-  }
+    // 2. Orders Real-time Listener
+    onSnapshot(query(collection(db, "orders"), orderBy("createdAt", "desc")), (snap) => {
+        allOrders = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        renderOrders();
+    });
 
-  const q = query(
-    collection(db, 'products'),
-    orderBy('createdAt', 'desc')
-  );
+    // 3. Products Real-time Listener
+    onSnapshot(collection(db, "products"), (snap) => {
+        allProducts = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        document.getElementById('admin-inventory').innerHTML = allProducts.map(p => `
+            <tr>
+                <td>${p.name}</td>
+                <td>
+                    <select onchange="updateStock('${p.id}', this.value)">
+                        <option value="Available" ${p.status==='Available'?'selected':''}>Available</option>
+                        <option value="Unavailable" ${p.status==='Unavailable'?'selected':''}>Unavailable</option>
+                    </select>
+                </td>
+                <td>₹${p.price}/${p.unit}</td>
+                <td>
+                    <button onclick="editProduct('${p.id}')">Edit</button> 
+                    <button onclick="deleteProduct('${p.id}')" style="color:red">Del</button>
+                </td>
+            </tr>`).join('');
+    });
 
-  productsUnsub = onSnapshot(q, snap => {
-    allProducts = snap.docs.map(d => ({
-      id: d.id,
-      ...d.data()
-    }));
-    renderProducts();
-  });
-}
+    // 4. Categories Real-time Listener
+    onSnapshot(collection(db, "categories"), (snap) => {
+        const cats = snap.docs.map(d => ({id: d.id, ...d.data()}));
+        document.getElementById('p-category').innerHTML = cats.map(c => `<option value="${c.name}">${c.name}</option>`).join('');
+        document.getElementById('admin-cat-list').innerHTML = cats.map(c => `
+            <span class="category-chip" style="background:#e2e8f0; border:none; display:flex; align-items:center; gap:8px; padding: 5px 10px; border-radius: 20px; font-size: 12px;">
+                ${c.name} <b onclick="deleteCategory('${c.id}')" style="cursor:pointer; color:red">×</b>
+            </span>`).join('');
+    });
 
-/* ======================================
-   ORDERS – REALTIME SAFE
-   ====================================== */
-function initOrders() {
-  if (ordersUnsub) {
-    ordersUnsub();
-    ordersUnsub = null;
-  }
-
-  const q = query(
-    collection(db, 'orders'),
-    orderBy('createdAt', 'desc')
-  );
-
-  ordersUnsub = onSnapshot(q, snap => {
-    allOrders = snap.docs.map(d => ({
-      id: d.id,
-      ...d.data()
-    }));
-    renderOrders();
-    updateStats();
-  });
-}
-
-/* ======================================
-   ADD PRODUCT (CRITICAL FIX)
-   ====================================== */
-window.addProduct = async () => {
-  const name = document.getElementById('p-name').value.trim();
-  const price = Number(document.getElementById('p-price').value);
-  const unit = document.getElementById('p-unit').value;
-  const img = document.getElementById('p-img').value.trim();
-  const desc = document.getElementById('p-desc').value.trim();
-  const category = document.getElementById('p-category').value;
-  const stock = Number(document.getElementById('p-stock').value);
-  const featured = document.getElementById('p-featured').checked;
-
-  if (!name || !price || !category) {
-    alert('Please fill required fields');
-    return;
-  }
-
-  const status =
-    stock > 0 ? 'Available' : 'Out of Stock';
-
-  await addDoc(collection(db, 'products'), {
-    name,
-    price,
-    unit,
-    imageUrl: img,
-    description: desc,
-    category,
-    stock,
-    featured: !!featured,
-    status,
-    createdAt: serverTimestamp()
-  });
-
-  clearProductForm();
+    // 5. Villages Real-time Listener
+    onSnapshot(collection(db, "villages"), (snap) => {
+        const villages = snap.docs.map(d => ({id: d.id, ...d.data()}));
+        document.getElementById('admin-village-list').innerHTML = villages.map(v => `
+            <div style="display:flex; justify-content:space-between; align-items:center; background:#fff; padding:8px; margin-bottom:5px; border-radius:8px; font-size:12px; border: 1px solid #ddd;">
+                <span><b>${v.name}</b> (₹${v.deliveryCharge})</span>
+                <b onclick="deleteVillage('${v.id}')" style="cursor:pointer; color:red; padding:0 5px;">×</b>
+            </div>`).join('');
+    });
 };
 
-/* ======================================
-   UPDATE PRODUCT FIELDS
-   ====================================== */
-window.updateStockCount = async (id, value) => {
-  const count = Number(value) || 0;
-
-  await updateDoc(doc(db, 'products', id), {
-    stock: count,
-    status: count > 0 ? 'Available' : 'Out of Stock',
-    updatedAt: serverTimestamp()
-  });
-};
-
-window.updatePrice = async (id, value) => {
-  await updateDoc(doc(db, 'products', id), {
-    price: Number(value) || 0,
-    updatedAt: serverTimestamp()
-  });
-};
-
-window.updateUnit = async (id, unit) => {
-  await updateDoc(doc(db, 'products', id), {
-    unit,
-    updatedAt: serverTimestamp()
-  });
-};
-
-window.toggleFeatured = async (id, val) => {
-  await updateDoc(doc(db, 'products', id), {
-    featured: !!val,
-    updatedAt: serverTimestamp()
-  });
-};
-
-window.updateStockStatus = async (id, status) => {
-  await updateDoc(doc(db, 'products', id), {
-    status,
-    updatedAt: serverTimestamp()
-  });
-};
-
-window.deleteProduct = async (id) => {
-  if (!confirm('Delete this product?')) return;
-  await deleteDoc(doc(db, 'products', id));
-};
-
-/* ======================================
-   RENDER PRODUCTS (ADMIN)
-   ====================================== */
-function renderProducts() {
-  const table = document.getElementById('admin-inventory');
-  if (!table) return;
-
-  table.innerHTML = allProducts.map(p => `
-    <tr>
-      <td>${p.name}</td>
-      <td>
-        <input type="number"
-          value="${p.stock || 0}"
-          onchange="updateStockCount('${p.id}', this.value)"
-        />
-      </td>
-      <td>₹${p.price}</td>
-      <td>${p.category || '-'}</td>
-      <td>${p.status}</td>
-      <td>
-        <button onclick="toggleFeatured('${p.id}', ${!p.featured})">
-          ${p.featured ? '★' : '☆'}
-        </button>
-        <button onclick="deleteProduct('${p.id}')">🗑</button>
-      </td>
-    </tr>
-  `).join('');
-}
-
-/* ======================================
-   ORDERS RENDER
-   ====================================== */
 function renderOrders() {
-  const table = document.getElementById('admin-orders');
-  if (!table) return;
+    const start = document.getElementById('filter-start').value;
+    const end = document.getElementById('filter-end').value;
+    let rev = 0, sold = 0;
+    
+    document.getElementById('admin-orders').innerHTML = allOrders.filter(o => {
+        if(!o.createdAt) return true;
+        const d = o.createdAt.toDate();
+        if(start && d < new Date(start)) return false;
+        if(end && d > new Date(end + 'T23:59:59')) return false;
+        return true;
+    }).map(o => {
 
-  table.innerHTML = allOrders.map(o => `
-    <tr>
-      <td>${o.customerName || '-'}</td>
-      <td>${o.customerPhone || '-'}</td>
-      <td>₹${o.total || 0}</td>
-      <td>${o.status || 'pending'}</td>
-    </tr>
-  `).join('');
+        // Revenue calculation
+        if(o.status === 'delivered') {
+            rev += o.total || 0;
+            (o.items || []).forEach(i => sold += i.qty || 0);
+        }
+
+        // Date & Time
+        let dateStr = "N/A";
+        let timeStr = "N/A";
+        if(o.createdAt) {
+            const d = o.createdAt.toDate();
+            dateStr = d.toLocaleDateString();
+            timeStr = d.toLocaleTimeString();
+        }
+
+        // Customer details fallback
+        const cname = o.customerName || "Unknown";
+        const cphone = o.customerPhone || "No Phone";
+        const caddress = o.customerAddress || "No Address";
+        const cvillage = o.villageName ? `<br><small>Village: ${o.villageName}</small>` : "";
+
+        // Product + Quantity list
+        const itemsList = (o.items && o.items.length > 0)
+            ? o.items.map(i => `${i.name} (x${i.qty})`).join(', ')
+            : "No Items";
+
+        return `
+            <tr>
+                <td>
+                    ${dateStr}<br>
+                    <small>${timeStr}</small>
+                </td>
+                <td>
+                    <b>${cname}</b><br>
+                    <small>${cphone}</small><br>
+                    <small>${caddress}</small>
+                    ${cvillage}<br>
+                    <small style="color:#2563eb">${itemsList}</small>
+                </td>
+                <td>₹${o.total || 0}</td>
+                <td><span class="status-tag status-${o.status}">${o.status}</span></td>
+                <td>
+                    <select onchange="upStatus('${o.id}', this.value)" style="width:110px; font-size:10px;">
+                        <option value="pending" ${o.status==='pending'?'selected':''}>Pending</option>
+                        <option value="delivered" ${o.status==='delivered'?'selected':''}>Delivered</option>
+                        <option value="cancelled" ${o.status==='cancelled'?'selected':''}>Cancelled</option>
+                        <option value="return_pending" ${o.status==='return_pending'?'selected':''}>Return Req</option>
+                        <option value="returned" ${o.status==='returned'?'selected':''}>Returned</option>
+                    </select>
+                </td>
+            </tr>`;
+    }).join('');
+
+    document.getElementById('total-rev-val').innerText = '₹' + rev;
+    document.getElementById('total-sold-val').innerText = sold;
 }
 
-/* ======================================
-   STATS
-   ====================================== */
-function updateStats() {
-  const total = allOrders.length;
-  const delivered = allOrders.filter(o => o.status === 'delivered').length;
+window.applyFilters = () => renderOrders();
+window.upStatus = async (id, s) => await updateDoc(doc(db, "orders", id), { status: s });
+window.updateStock = async (id, s) => await updateDoc(doc(db, "products", id), { status: s });
 
-  const totalEl = document.getElementById('total-orders-val');
-  const deliveredEl = document.getElementById('delivered-orders-val');
+window.editProduct = (id) => {
+    const p = allProducts.find(x => x.id === id);
+    document.getElementById('edit-id').value = id;
+    document.getElementById('edit-name').value = p.name;
+    document.getElementById('edit-price').value = p.price;
+    document.getElementById('edit-unit').value = p.unit || 'piece';
+    document.getElementById('edit-img').value = p.imageUrl || '';
+    document.getElementById('edit-modal').classList.add('active');
+};
 
-  if (totalEl) totalEl.textContent = total;
-  if (deliveredEl) deliveredEl.textContent = delivered;
-}
+window.saveEdit = async () => {
+    await updateDoc(doc(db, "products", document.getElementById('edit-id').value), {
+        name: document.getElementById('edit-name').value, 
+        price: parseInt(document.getElementById('edit-price').value),
+        unit: document.getElementById('edit-unit').value, 
+        imageUrl: document.getElementById('edit-img').value
+    });
+    document.getElementById('edit-modal').classList.remove('active');
+};
 
-/* ======================================
-   HELPERS
-   ====================================== */
-function clearProductForm() {
-  ['p-name','p-price','p-img','p-desc','p-stock'].forEach(id => {
-    const el = document.getElementById(id);
-    if (el) el.value = '';
-  });
-  document.getElementById('p-featured').checked = false;
-}
+window.updateShopSettings = async () => {
+    await setDoc(doc(db, "shopControl", "status"), {
+        isClosed: document.getElementById('shop-toggle').checked,
+        deliveryCharge: parseInt(document.getElementById('delivery-charge-input').value) || 0,
+        supportNumber: document.getElementById('support-number-input').value
+    }, { merge: true });
+    alert("Settings Saved Successfully");
+};
+
+window.addProduct = async () => {
+    const name = document.getElementById('p-name').value;
+    const price = parseInt(document.getElementById('p-price').value);
+    if(name && price) {
+        await addDoc(collection(db, "products"), { 
+            name, 
+            price, 
+            unit: document.getElementById('p-unit').value, 
+            imageUrl: document.getElementById('p-img').value, 
+            category: document.getElementById('p-category').value, 
+            status: 'Available', 
+            createdAt: serverTimestamp() 
+        });
+        alert("Product Added");
+    }
+};
+
+window.addCategory = async () => {
+    const n = document.getElementById('new-cat-name').value;
+    if(n) await addDoc(collection(db, "categories"), { name: n });
+};
+
+window.deleteProduct = async (id) => { 
+    if(confirm("Delete Product?")) await deleteDoc(doc(db, "products", id)); 
+};
+
+window.deleteCategory = async (id) => { 
+    if(confirm("Delete Category?")) await deleteDoc(doc(db, "categories", id)); 
+};
+
+// Village Functions
+window.addVillage = async () => {
+    const name = document.getElementById('v-name').value;
+    const charge = parseInt(document.getElementById('v-charge').value);
+    if(name && !isNaN(charge)) {
+        await addDoc(collection(db, "villages"), { name, deliveryCharge: charge });
+        document.getElementById('v-name').value = '';
+        document.getElementById('v-charge').value = '';
+    } else {
+        alert("Please enter village name and delivery charge");
+    }
+};
+
+window.deleteVillage = async (id) => {
+    if(confirm("Delete this village?")) await deleteDoc(doc(db, "villages", id));
+};
